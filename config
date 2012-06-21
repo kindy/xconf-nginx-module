@@ -144,6 +144,7 @@ NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
                 $ngx_addon_dir/src/ngx_xconf_module.c \
                 $ngx_addon_dir/src/ngx_xconf_directive.c \
                 $ngx_addon_dir/src/ngx_xconf_uri_file.c \
+                $ngx_addon_dir/src/ngx_xconf_uri_http.c \
                 "
 
 NGX_ADDON_DEPS="$NGX_ADDON_DEPS \

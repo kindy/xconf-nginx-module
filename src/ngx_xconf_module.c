@@ -1,5 +1,9 @@
 /* vim:set ft=c ts=4 sw=4 et fdm=marker: */
 
+/*
+ * 感谢 chaoslawful (王晓哲) 给予大量精神指引和技术支持
+ */
+
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif

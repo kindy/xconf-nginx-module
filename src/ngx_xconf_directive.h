@@ -21,6 +21,7 @@ typedef struct {
 
 char * ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 char * ngx_xconf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
+char * ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_lua(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_luai(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 

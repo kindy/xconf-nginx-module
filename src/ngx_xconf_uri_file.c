@@ -1,5 +1,9 @@
 /* vim:set ft=c ts=4 sw=4 et fdm=marker: */
 
+/*
+ * almost all code from nginx/src/core/ngx_conf_file.c
+ */
+
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif
@@ -18,8 +22,8 @@ ngx_xconf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_x
     ngx_str_t    file, name;
     ngx_glob_t   gl;
 
-    file.len = ctx->noscheme_uri.len;
-    file.data = ctx->noscheme_uri.data;
+    file.len = ctx->noscheme_uri.len - 2;
+    file.data = ctx->noscheme_uri.data + 2;
 
     ngx_log_debug1(NGX_LOG_DEBUG_CORE, cf->log, 0, "include %s", file.data);
 

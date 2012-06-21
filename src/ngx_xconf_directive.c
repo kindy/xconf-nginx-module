@@ -54,6 +54,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     u_char              need_next;
     ngx_str_t           ofilename_prefix = ngx_string("$file"),
                         ofilename_suffix = ngx_string("l$line.conf");
+    char                *rv;
 
     /*
     -n
@@ -173,18 +174,39 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ctx.uri.data = uri.data;
 
     /* 计算 uri 的 scheme {{{ */
-    /* 如果以 '/' 或 './' 开头 认为是 file:// */
-    if (uri.data[0] == '/'
+    /* 如果以 '//' 开头 认为是 http: */
+    if (uri.len > 2 && uri.data[0] == '/' && uri.data[1] == '/') {
+        ctx.noscheme_uri.data = uri.data;
+        ctx.noscheme_uri.len = uri.len;
+
+        ctx.scheme.len = sizeof("http") - 1;
+        ctx.scheme.data = ngx_palloc(cf->pool, ctx.scheme.len);
+        ctx.scheme.data[0] = 'h';
+        ctx.scheme.data[1] = 't';
+        ctx.scheme.data[2] = 't';
+        ctx.scheme.data[3] = 'p';
+    /* 如果以 '/' 或 './' 开头 认为是 file: */
+    } else if (uri.data[0] == '/'
             || (uri.len > 2 && uri.data[0] == '.' && uri.data[1] == '/')) {
+
+        size_t is_abs = uri.data[0] == '/';
+        u_char *data = uri.data + (is_abs ? 0 : 2);
+        size_t len = uri.len - (is_abs ? 0 : 2);
+
+        ctx.noscheme_uri.len = len + 2;
+        ctx.noscheme_uri.data = ngx_palloc(cf->pool, len + 2);
+        ctx.noscheme_uri.data[0] = '/';
+        ctx.noscheme_uri.data[1] = '/';
+
+        /* XXX len-- 的行为是否完全可预测 ???? */
+        while (len-- > 0) { ctx.noscheme_uri.data[2 + len] = data[len]; }
+
         ctx.scheme.len = sizeof("file") - 1;
         ctx.scheme.data = ngx_palloc(cf->pool, ctx.scheme.len);
         ctx.scheme.data[0] = 'f';
         ctx.scheme.data[1] = 'i';
         ctx.scheme.data[2] = 'l';
         ctx.scheme.data[3] = 'e';
-
-        ctx.noscheme_uri.len = uri.len + (uri.data[0] == '/' ? 0 : -2);
-        ctx.noscheme_uri.data = uri.data + (uri.data[0] == '/' ? 0 : 2);
     } else {
         u_char      c;
         ngx_str_t   scheme;
@@ -246,11 +268,18 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         filename.data = ngx_palloc(cf->pool, filename.len + 1);
         ngx_snprintf(filename.data, filename.len,
                 "%V.%V",
-                &ofilename_prefix, &arg[i], &ofilename_suffix);
+                &ofilename_prefix, &ofilename_suffix);
     }
 
     /* TODO filename 变量展开 */
     /* }}} */
+
+    ctx.cachefile.len = filename.len;
+    ctx.cachefile.data = filename.data;
+
+    ctx.cachefile.len = sizeof("/Users/kindy/h/github/kindy/confby-nginx-module/abc.conf") - 1;
+    ctx.cachefile.data = ngx_palloc(cf->pool, ctx.cachefile.len);
+    ngx_memcpy(ctx.cachefile.data, "/Users/kindy/h/github/kindy/confby-nginx-module/abc.conf", ctx.cachefile.len);
 
     ngx_log_error(NGX_LOG_INFO, cf->log, 0,
             "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\nusecache: %d\nevalurl: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
@@ -259,10 +288,24 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (! ngx_strncmp(ctx.scheme.data, "file", ctx.scheme.len)) {
         if (ngx_xconf_include_uri_file(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                    "%V: run error.",
+                    "%V: run file error.",
                     cmd_name);
 
             return NGX_CONF_ERROR;
+        }
+    } else if (! ngx_strncmp(ctx.scheme.data, "http", ctx.scheme.len)) {
+        if (ngx_xconf_include_uri_http(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%V: run http error.",
+                    cmd_name);
+
+            return NGX_CONF_ERROR;
+        } else {
+            rv = ngx_conf_parse(cf, &ctx.cachefile);
+
+            if (rv != NGX_CONF_OK) {
+                return NGX_CONF_ERROR;
+            }
         }
     }
 
