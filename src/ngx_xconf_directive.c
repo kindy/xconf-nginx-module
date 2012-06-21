@@ -76,6 +76,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     need_next = 0;
     is_last_elt = 0;
 
+    /* 解析参数 {{{ */
     for (i = 1; i < cf->args->nelts; i++) {
         if (! (arg[i].len)) {
             continue;
@@ -156,6 +157,9 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         goto unknow_opt;
     }
+    /* }}} */
+
+    /* TODO uri 变量展开 */
 
     if (! (uri.len)) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
@@ -165,20 +169,11 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    if (! (filename.len)) {
-        filename.len = ofilename_prefix.len + ofilename_suffix.len + sizeof(".") - 1;
-        filename.data = ngx_palloc(cf->pool, filename.len + 1);
-        ngx_snprintf(filename.data, filename.len,
-                "%V.%V",
-                &ofilename_prefix, &arg[i], &ofilename_suffix);
-    }
-
-
     ctx.uri.len = uri.len;
     ctx.uri.data = uri.data;
 
-    /* 计算 uri 的 scheme */
-    /* / || ./ */
+    /* 计算 uri 的 scheme {{{ */
+    /* 如果以 '/' 或 './' 开头 认为是 file:// */
     if (uri.data[0] == '/'
             || (uri.len > 2 && uri.data[0] == '.' && uri.data[1] == '/')) {
         ctx.scheme.len = sizeof("file") - 1;
@@ -243,10 +238,33 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         ctx.noscheme_uri.len = uri.len - scheme.len - 1;
         ctx.noscheme_uri.data = uri.data + scheme.len + 1;
     }
+    /* }}} */
 
-    ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+    /* XXX 有些 scheme 不需要 filename ，如 file {{{ */
+    if (! (filename.len)) {
+        filename.len = ofilename_prefix.len + ofilename_suffix.len + sizeof(".") - 1;
+        filename.data = ngx_palloc(cf->pool, filename.len + 1);
+        ngx_snprintf(filename.data, filename.len,
+                "%V.%V",
+                &ofilename_prefix, &arg[i], &ofilename_suffix);
+    }
+
+    /* TODO filename 变量展开 */
+    /* }}} */
+
+    ngx_log_error(NGX_LOG_INFO, cf->log, 0,
             "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\nusecache: %d\nevalurl: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
             cmd_name, &filename, &uri, ctx.usecache, ctx.evaluri, &ctx.scheme, &ctx.noscheme_uri);
+
+    if (! ngx_strncmp(ctx.scheme.data, "file", ctx.scheme.len)) {
+        if (ngx_xconf_include_uri_file(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%V: run error.",
+                    cmd_name);
+
+            return NGX_CONF_ERROR;
+        }
+    }
 
     return NGX_CONF_OK;
 

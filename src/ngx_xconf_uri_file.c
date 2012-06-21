@@ -6,20 +6,20 @@
 #include "ddebug.h"
 
 
-#include "ngx_conf_common.h"
-#include "ngx_conf_directive.h"
+#include "ngx_xconf_common.h"
+#include "ngx_xconf_directive.h"
 
 
-static char *
-ngx_conf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+char *
+ngx_xconf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx)
 {
     char        *rv;
     ngx_int_t    n;
-    ngx_str_t   *value, file, name;
+    ngx_str_t    file, name;
     ngx_glob_t   gl;
 
-    value = cf->args->elts;
-    file = value[1];
+    file.len = ctx->noscheme_uri.len;
+    file.data = ctx->noscheme_uri.data;
 
     ngx_log_debug1(NGX_LOG_DEBUG_CORE, cf->log, 0, "include %s", file.data);
 

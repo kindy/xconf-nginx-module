@@ -5,7 +5,7 @@
 version="1.2.1"
 opts=$1
 
-root=$(cd $(dirname $0) && echo $PWD)
+root=$(cd "$(dirname $0)/../" && echo $PWD)
 mkdir -p $root/{build,work}
 
 cd $root
