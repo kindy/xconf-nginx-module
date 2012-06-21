@@ -1,0 +1,33 @@
+
+include_uri uri;
+    uri - 远程配置地址
+        http://abc.com:81/xxx
+        file:///home/abc/xx.conf or /home/abc/xx.conf
+        x://lua/path/to/lua/file - 使用 lua 来执行后面路径指定的文件
+            x://perl/path/to/perl
+            x://python/path/to/python
+            x://php/path/to/php
+        - 可用变量
+            $$ -> $
+            $hostname -> 当前机器hostname
+            $pid -> 当前 nginx master pid
+    -n 不要对 uri 做变量插值
+    -o $file.abc.conf
+        本地文件名，默认 "$file.l$line.conf"
+        可用变量:
+            $file - 当前配置文件
+            $line - 当前行(指令结束行，受 nginx 所限)
+            $conf_prefix - 配置文件 prefix
+            $prefix - nginx 运行 prefix(nginx 启动时候 -p 设定目录)
+    -O <xx>
+        -o 的扩展，会把值放到 "$file.<xx>.l$line.conf"
+    -t (timeout) 4m - uri 执行超时(仅 http 有效)
+    -c (usecache) - 当 uri 处理失败时，是否使用本地 cachefile(-o 参数指定)
+    -T (cachetime) 10m - cache 有效时长(仅在usecache时候有效)
+        0 - (default) 无限长，只要有cachefile 就是用
+        n - cachefile 的 mtime 是否大于 n，是就 fail
+
+include_uri -O main -t 3s -c -T 3d http://config-server/web1.conf;
+
+
+string_compile(cf)
