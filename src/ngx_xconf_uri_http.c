@@ -144,7 +144,7 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     u_char              buf[1024 * 50], *p, *last;
     struct addrinfo     *srvinfo;
     lua_State           *L;
-    int                 narg;
+    int                 narg, rc;
     int                 lua_stack_n = 0;
 
     L = ctx->lua;
@@ -164,9 +164,11 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
-    if (getaddrinfo((char *)(host->data), (char *)(port->data), &hints, &srvinfo)) {
+    rc = getaddrinfo((char *)(host->data), (char *)(port->data), &hints, &srvinfo);
+    if (rc != 0) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get: getaddrinfo error.");
+                "http get process resp: write data to tmpfile (%V) error: \"%s\".",
+                gai_strerror(rc));
 
         goto error;
     }
