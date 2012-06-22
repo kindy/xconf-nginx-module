@@ -10,6 +10,17 @@ mkdir -p $root/{build,work}
 
 cd $root
 
+util/bin2c src/ngx_xconf_uri_http_parse_resp.lua xconf_uri_http_parse_resp_lua >src/ngx_xconf_uri_http_parse_resp.lua.h
+if [ $? != 0 ]; then
+    echo 'Failed to generate the lua code (src/ngx_xconf_uri_http_parse_resp.lua).' 1>&2
+    exit 1;
+fi
+util/bin2c src/ngx_xconf_util.lua xconf_util_lua >src/ngx_xconf_util.lua.h
+if [ $? != 0 ]; then
+    echo 'Failed to generate the lua code (src/ngx_xconf_util.lua).' 1>&2
+    exit 1;
+fi
+
 cd $root/build
 
 if [ ! -d nginx-$version ]; then
@@ -27,7 +38,7 @@ if [[ "$BUILD_CLEAN" -eq 1 || ! -f Makefile || "$root/config" -nt Makefile || "$
     ./configure --prefix=$root/work \
                 --add-module=$root \
                 --with-cc=/usr/bin/gcc-4.2 \
-                --with-cc-opt=" -O0 -DDDEBUG" \
+                --with-cc-opt=" -O0 -DDDEBUG -DXCONF_URI_HTTP_USE_LUA_FILE=1" \
                 $opts \
                 --with-debug
 fi
@@ -42,5 +53,12 @@ fi
 
 make -j2
 make install
+
+rm -f $root/work/conf/xconf_uri_http_parse_resp.lua && ln -s $root/src/ngx_xconf_uri_http_parse_resp.lua $root/work/conf/xconf_uri_http_parse_resp.lua
+if [ $? != 0 ]; then
+    echo 'Failed to copy lua code to nginx conf directory.' 1>&2
+    exit 1;
+fi
+
 
 echo done

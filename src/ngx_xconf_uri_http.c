@@ -8,14 +8,27 @@
 #ifndef DDEBUG
 #define DDEBUG 0
 #endif
+
 #include "ddebug.h"
 
 
 #include "ngx_xconf_common.h"
 #include "ngx_xconf_directive.h"
+#include "ngx_xconf_uri_http_parse_resp.lua.h"
 
+#ifndef XCONF_URI_HTTP_USE_LUA_FILE
+#define XCONF_URI_HTTP_USE_LUA_FILE 0
+#endif
+
+#if (XCONF_URI_HTTP_USE_LUA_FILE)
+static const char *xconf_uri_http_parse_resp_lua_file = "xconf_uri_http_parse_resp.lua";
+#endif
+
+static int ngx_xconf_uri_http_load_parse_resp_lua(ngx_conf_t *cf, lua_State *L);
 
 static int ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_conf_t *cf, ngx_xconf_ctx_t *ctx);
+static int ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *file,
+        int cachefd, int status_code, ngx_str_t *body, ngx_xconf_ctx_t *ctx);
 
 
 char *
@@ -126,10 +139,15 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
 {
     struct addrinfo     hints;
     ngx_str_t           file, tmpfile;
-    int                 connfd, rwlen, crwlen, cachefd, cwritedone;
+    int                 connfd, rwlen, cachefd;
     size_t              buflen = 1024 * 50;
     u_char              buf[1024 * 50], *p, *last;
     struct addrinfo     *srvinfo;
+    lua_State           *L;
+    int                 narg;
+    int                 lua_stack_n = 0;
+
+    L = ctx->lua;
 
     /* 创建连接 {{{ */
     srvinfo = ngx_palloc(cf->pool, sizeof(struct addrinfo));
@@ -139,7 +157,7 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                 "http get: create socket error.");
 
-        return NGX_ERROR;
+        goto error;
     }
 
     memset(&hints, 0, sizeof(struct addrinfo));
@@ -150,14 +168,14 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                 "http get: getaddrinfo error.");
 
-        return NGX_ERROR;
+        goto error;
     }
 
     if (connect(connfd, srvinfo->ai_addr, srvinfo->ai_addrlen)) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                 "http get: connect socket error.");
 
-        return NGX_ERROR;
+        goto error;
     }
     /* }}} */
 
@@ -186,14 +204,29 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
 
     tmpfile.len = file.len + 4;
     tmpfile.data = ngx_palloc(cf->pool, tmpfile.len + 1); /* for open '\0' */
-    ngx_memcpy(tmpfile.data, ".tmp", 4);
-    ngx_memcpy(tmpfile.data + 4, file.data, file.len);
+    ngx_memcpy(tmpfile.data, file.data, file.len);
+    ngx_memcpy(tmpfile.data + file.len, ".tmp", 4);
     tmpfile.data[tmpfile.len] = '\0';
 
-    cachefd = open((char *) tmpfile.data, O_WRONLY);
+    cachefd = open((char *) tmpfile.data, O_CREAT | O_WRONLY);
+    if (cachefd == -1) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "http: open tmpfile (%V) error: \"%s\".",
+                &tmpfile, strerror(errno));
+
+        goto error;
+    }
+    dd("open cachefd: %s, %d", tmpfile.data, cachefd);
     /* }}} */
 
-    cwritedone = 0;
+    if (ngx_xconf_uri_http_load_parse_resp_lua(cf, L) != NGX_OK) {
+        goto error;
+    }
+    lua_stack_n = 1;
+    narg = 0;
+    lua_createtable(L, /* narr */2, /* nrec*/ 0); /* body{}, func */
+    lua_stack_n = 2;
+
     while ((rwlen = read(connfd, buf, buflen))) {
         if (rwlen == -1) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
@@ -202,43 +235,173 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
             goto error;
         }
 
-        crwlen = write(cachefd, buf, rwlen);
-        if (crwlen != rwlen) {
-            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                    "http get: write data to tmpfile error.");
-
-            goto error;
-        }
-        cwritedone = 1;
+        /* 获取到的数据交由 lua 处理，更加灵活和简单，c 处理字符串太复杂 */
+        lua_pushnumber(L, ++narg);              /* n, body{}, func */
+        lua_pushlstring(L, (char *)buf, rwlen); /* str, n, body{}, func */
+        lua_settable(L, -3);                    /* body{str}, func */
 
         ngx_log_error(NGX_LOG_INFO, cf->log, 0,
                 "\n- - - - http get - - - -\n%*s\n- - - - - - - -",
                 rwlen, buf);
     }
 
-    if (cwritedone) {
-        if (! rename((char *) tmpfile.data, (char *) file.data)) {
-            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                    "http get: move tmpfile to file error.");
-
-            goto error;
-        }
-    } else {
+    if (narg == 0) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get: got non-data from server error.");
+                "http get: server return empty.");
 
         goto error;
+    } else {
+        if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+            lua_stack_n = 0;
+            goto error;
+        }
+        /* lua stack: result{} */
+        /*
+         * result{}
+         *  status_code
+         *  body (trim \r)
+         */
+        if (! lua_istable(L, -1)) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "http get proc resp lua: lua should return a table.");
+            lua_stack_n = 1;
+
+            goto error;
+        } else {
+            int         status_code;
+            ngx_str_t   body, status_txt;
+            /* ret{} */
+            lua_getfield(L, -1, "status_txt"); /* status_txt, ret{} */
+            lua_getfield(L, -2, "status_code"); /* status_code, status_txt, ret{} */
+            lua_getfield(L, -3, "body"); /* body, status_code, status_txt, ret{} */
+            lua_stack_n = 4;
+
+            if (! (lua_isnumber(L, -2) && lua_isstring(L, -1))) {
+                ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                        "http get proc resp lua: lua return must have status_code(number) & body(string).");
+
+                goto error;
+            }
+
+            status_code = lua_tonumber(L, -2);
+            body.data = (u_char *)lua_tolstring(L, -1, &body.len);
+            status_txt.data = (u_char *)lua_tolstring(L, -1, &status_txt.len);
+
+            ngx_log_error(NGX_LOG_INFO, cf->log, 0,
+                    "\n- - - - http get lua return - - - -\nstatus_code: %d\nstatus_txt: %V\nbody: %V\n- - - - - - - -",
+                    status_code, &status_txt, &body);
+
+            if (ngx_xconf_uri_http_process_resp(cf, &tmpfile, &file, cachefd, status_code, &body, ctx) != NGX_OK) {
+                goto error;
+            }
+
+            goto done;
+        }
     }
 
+
+done:
+    lua_pop(L, lua_stack_n);
     close(connfd);
     close(cachefd);
 
     return NGX_OK;
 
 error:
+    lua_pop(L, lua_stack_n);
     close(connfd);
     close(cachefd);
 
     return NGX_ERROR;
+}
+
+
+static int
+ngx_xconf_uri_http_load_parse_resp_lua(ngx_conf_t *cf, lua_State *L)
+{
+#if (XCONF_URI_HTTP_USE_LUA_FILE)
+    size_t  len;
+    char    *lua_filename;
+    int     rc;
+
+    /* $conf_prefix/$filename\0 */
+    len = cf->cycle->conf_prefix.len
+            + strlen(xconf_uri_http_parse_resp_lua_file) + 1;
+
+    lua_filename = ngx_palloc(cf->pool, len);
+    ngx_memcpy(lua_filename,
+            cf->cycle->conf_prefix.data, cf->cycle->conf_prefix.len);
+    ngx_cpystrn((u_char *) lua_filename + cf->cycle->conf_prefix.len,
+            (u_char *) xconf_uri_http_parse_resp_lua_file,
+            strlen(xconf_uri_http_parse_resp_lua_file) + 1);
+
+    rc = luaL_loadfile(L, lua_filename);
+    ngx_pfree(cf->pool, lua_filename);
+#else
+    rc = luaL_loadbuffer(L, (const char*) xconf_uri_http_parse_resp_lua, sizeof(xconf_uri_http_parse_resp_lua), "xconf_uri_http_parse_resp.lua(embed)");
+#endif
+
+    if (rc != 0) {
+        ngx_str_t   msg;
+
+        msg.data = (u_char *) lua_tolstring(L, -1, &msg.len);
+
+        if (msg.data == NULL) {
+            msg.data = (u_char *) "unknown reason";
+            msg.len = sizeof("unknown reason") - 1;
+        }
+
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "xconf load lua code error: %V.",
+                &msg);
+
+        lua_pop(L, 1);
+
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static int
+ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *file,
+        int cachefd, int status_code, ngx_str_t *body, ngx_xconf_ctx_t *ctx)
+{
+    int     crwlen;
+
+    if (status_code != 200) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "http get process resp: get from \"%V\" got status code [%d] error, 200 needed.",
+                &ctx->noscheme_uri, status_code);
+
+        return NGX_ERROR;
+    }
+
+    crwlen = write(cachefd, body->data, body->len);
+    if (crwlen == -1) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "http get process resp: write data to tmpfile (%V) error: \"%s\".",
+                tmpfile, strerror(errno));
+
+        return NGX_ERROR;
+    } else if ((size_t)crwlen != body->len) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "http get process resp: write data to tmpfile (%V) error w: %d, rw: %d.",
+                tmpfile, body->len, crwlen);
+
+        return NGX_ERROR;
+    }
+
+    close(cachefd);
+
+    if (rename((char *) tmpfile->data, (char *) file->data) != 0) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "http get process resp: move tmpfile to file error.");
+
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
 

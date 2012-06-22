@@ -9,39 +9,8 @@
 #include "ngx_xconf_common.h"
 #include "ngx_xconf_directive.h"
 
-
-/*
-include_uri uri;
-    uri - 远程配置地址
-        http://abc.com:81/xxx
-        file:///home/abc/xx.conf or /home/abc/xx.conf
-        x://lua/path/to/lua/file - 使用 lua 来执行后面路径指定的文件
-            x://perl/path/to/perl
-            x://python/path/to/python
-            x://php/path/to/php
-        - 可用变量
-            $$ -> $
-            $hostname -> 当前机器hostname
-            $pid -> 当前 nginx master pid
-    -o $file.abc.conf
-        本地文件名，默认 "$file.l$line.conf"
-        可用变量:
-            $file - 当前配置文件
-            $line - 当前行(指令结束行，受 nginx 所限)
-            $conf_prefix - 配置文件 prefix
-            $prefix - nginx 运行 prefix(nginx 启动时候 -p 设定目录)
-    -O <xx>
-        -o 的扩展，会把值放到 "$file.<xx>.l$line.conf"
-    -t (timeout) 4m - uri 执行超时(仅 http 有效)
-    -c (usecache) - 当 uri 处理失败时，是否使用本地 cachefile(-o 参数指定)
-    -T (cachetime) 10m - cache 有效时长(仅在usecache时候有效)
-        0 - (default) 无限长，只要有cachefile 就是用
-        n - cachefile 的 mtime 是否大于 n，是就 fail
-
-include_uri -O main -t 3s -c -T 3d http://config-server/web1.conf;
-*/
-
 static size_t max_scheme_len = 100;
+
 
 char *
 ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -50,25 +19,22 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_xconf_ctx_t     ctx;
     ngx_flag_t          is_last_elt;
     ngx_uint_t          i;
-    ngx_str_t           *cmd_name;
+    ngx_str_t          *cmd_name;
     u_char              need_next;
     ngx_str_t           ofilename_prefix = ngx_string("$file"),
-                        ofilename_suffix = ngx_string("l$line.conf");
-    char                *rv;
+                        ofilename_suffix = ngx_string("l$line.conf"),
+                        ofilename_suffix2 = ngx_string("conf");
+    char               *rv;
+    u_char             *s; /* 用于临时分配内存用 */;
+    lua_State          *L;
 
-    /*
-    -n
-    -o $file.abc.conf
-    -O <xx>
-    -t (timeout) 4m - uri 执行超时(仅 http 有效)
-    -c (usecache) - 当 uri 处理失败时，是否使用本地 cachefile(-o 参数指定)
-    -T (cachetime) 10m - cache 有效时长(仅在usecache时候有效)
-    */
+    /* 参数说明见 README */
 
     uri.len = 0;        /* 如果没设定报错 */
     filename.len = 0;   /* 如果没设定就默认给一个 */
     ctx.evaluri = 1;    /* 默认 eval uri */
-    ctx.usecache = 0;   /* 默认不使用 cachefile */
+    ctx.pre_usecache = -1;   /* 默认不使用 cachefile */
+    ctx.fail_usecache = -1;   /* 默认不使用 cachefile */
 
     arg = cf->args->elts;
 
@@ -98,11 +64,51 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                             "%V.%V.%V",
                             &ofilename_prefix, &arg[i], &ofilename_suffix);
                     break;
+                case 'I':
+                    filename.len = ofilename_prefix.len + arg[i].len + ofilename_suffix2.len + sizeof("..") - 1;
+                    filename.data = ngx_palloc(cf->pool, filename.len + 1);
+                    ngx_snprintf(filename.data, filename.len,
+                            "%V.%V.%V",
+                            &ofilename_prefix, &arg[i], &ofilename_suffix2);
+                    break;
                 case 't':
                     ctx.timeout = ngx_parse_time(&arg[i], 1);
+                    if (ctx.timeout == NGX_ERROR) {
+                        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                                "%V: option [-t %V] value error.",
+                                cmd_name, &arg[i]);
+
+                        return NGX_CONF_ERROR;
+                    }
                     break;
-                case 'T':
-                    ctx.cachetime = ngx_parse_time(&arg[i], 1);
+                case 'c':
+                    if (arg[i].len == 2 && arg[i].data[0] == '-' && arg[i].data[1] == '1') {
+                        ctx.pre_usecache = -1 * (arg[i].data[1] - '0');
+                    } else {
+                        ctx.pre_usecache = ngx_parse_time(&arg[i], 1);
+                        if (ctx.pre_usecache == NGX_ERROR) {
+                            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                                    "%V: option [-c %V] value error.",
+                                    cmd_name, &arg[i]);
+
+                            return NGX_CONF_ERROR;
+                        }
+                    }
+                    break;
+                case 'C':
+                    if (arg[i].len == 2 && arg[i].data[0] == '-' &&
+                            (arg[i].data[1] >= '1' && arg[i].data[1] <= '2')) {
+                        ctx.fail_usecache = -1 * (arg[i].data[1] - '0');
+                    } else {
+                        ctx.fail_usecache = ngx_parse_time(&arg[i], 1);
+                        if (ctx.fail_usecache == NGX_ERROR) {
+                            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                                    "%V: option [-C %V] value error.",
+                                    cmd_name, &arg[i]);
+
+                            return NGX_CONF_ERROR;
+                        }
+                    }
                     break;
                 default:
                     /* 通常不会到这里 */
@@ -126,12 +132,11 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                         ctx.evaluri = 0;
                         break;
                     case 'c':
-                        ctx.usecache = 1;
-                        break;
+                    case 'C':
                     case 'o':
+                    case 'I':
                     case 'O':
                     case 't':
-                    case 'T':
                         need_next = arg[i].data[1];
 
                         if (is_last_elt) {
@@ -160,14 +165,95 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
     /* }}} */
 
-    /* TODO uri 变量展开 */
+    /* 因为上面不需要用到 lua 的功能，所有此刻才初始化 lua vm {{{ */
+    L = luaL_newstate();
+
+    if (L == NULL) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "%V: create lua vm fail.",
+                cmd_name);
+
+        return NGX_CONF_ERROR;
+    }
+
+    /* XXX 从这以下如果出错，需要 goto error; 因为要 close lua vm */
+
+    ctx.lua = L;
+
+    luaL_openlibs(L);
+    {
+        int         rc;
+        ngx_str_t   msg;
+
+        rc = luaL_loadbuffer(L, (const char*) xconf_util_lua, sizeof(xconf_util_lua), "ngx_xconf_util.lua(embed)");
+        if (rc != 0) {
+            msg.data = (u_char *) lua_tolstring(L, -1, &msg.len);
+
+            if (msg.data == NULL) {
+                msg.data = (u_char *) "unknown reason";
+                msg.len = sizeof("unknown reason") - 1;
+            }
+
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "xconf load lua code error: %V.",
+                    &msg);
+
+            lua_pop(L, 1);
+
+            goto error;
+        }
+    }
+    /* 这个 lua 文件会创建 若干个 全局函数，如: format */
+
+    if (ngx_xconf_util_lua_pcall(cf, L, 0, 0, 0, 0) != NGX_OK) {
+        goto error;
+    }
+    /* }}} */
+
+    /* 创建变量 table 到 lua vm (var_ctx) 里，用于变量插值 {{{ */
+    lua_createtable(L, /* i */0, /* key */10); /* var_ctx */
+    lua_pushlstring(L, (char *)cf->conf_file->file.name.data, cf->conf_file->file.name.len);
+    lua_setfield(L, -2, "file");
+    lua_pushnumber(L, cf->conf_file->line);
+    lua_setfield(L, -2, "line");
+    lua_pushlstring(L, (char *)cf->cycle->prefix.data, cf->cycle->prefix.len);
+    lua_setfield(L, -2, "prefix");
+    lua_pushlstring(L, (char *)cf->cycle->conf_prefix.data, cf->cycle->conf_prefix.len);
+    lua_setfield(L, -2, "conf_prefix");
+    lua_pushnumber(L, (int) ngx_pid);
+    lua_setfield(L, -2, "pid");
+    lua_pushlstring(L, (char *)cf->cycle->hostname.data, cf->cycle->hostname.len);
+    lua_setfield(L, -2, "hostname");
+    {
+        ngx_time_t *tp = ngx_timeofday();
+
+        lua_pushnumber(L, (int) (tp->sec));
+        lua_setfield(L, -2, "time"); /* var_ctx */
+    }
+
+    lua_setfield(L, LUA_GLOBALSINDEX, "var_ctx");
+    /* }}} */
+
+    if (ctx.evaluri) {
+        lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
+        lua_pushlstring(L, (char *) uri.data, uri.len);
+        if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+            goto error;
+        }
+        uri.data = (u_char *) lua_tolstring(L, -1, &uri.len);
+        s = ngx_palloc(cf->pool, uri.len);
+        ngx_memcpy(s, uri.data, uri.len);
+        uri.data = s;
+        s = NULL;
+        lua_pop(L, 1);
+    }
 
     if (! (uri.len)) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                 "%V: must give us uri.",
                 cmd_name);
 
-        return NGX_CONF_ERROR;
+        goto error;
     }
 
     ctx.uri.len = uri.len;
@@ -238,7 +324,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                         "%V: uri (%V...) have no valid scheme name.",
                         cmd_name, &scheme);
 
-                return NGX_CONF_ERROR;
+                goto error;
             }
 
             /* XXX important */
@@ -250,7 +336,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                     "%V: uri (%V) have no valid scheme name.",
                     cmd_name, &uri);
 
-            return NGX_CONF_ERROR;
+            goto error;
         }
 
         ctx.scheme.len = scheme.len;
@@ -271,20 +357,33 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 &ofilename_prefix, &ofilename_suffix);
     }
 
-    /* TODO filename 变量展开 */
     /* }}} */
+    /* FIXME filename.data 是否需要 free ?? */
+    lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
+    lua_pushlstring(L, (char *) filename.data, filename.len);
+    if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+        goto error;
+    }
+    filename.data = (u_char *) lua_tolstring(L, -1, &filename.len);
+    s = ngx_palloc(cf->pool, filename.len + 1);
+    ngx_cpystrn(s, filename.data, filename.len + 1); /* 让 ngx_cpystrn 帮忙添加个 \0 */
+    filename.data = s;
+    s = NULL;
+    lua_pop(L, 1);
+
+    if (ngx_conf_full_name(cf->cycle, &filename, 1) != NGX_OK) {
+        goto error;
+    }
 
     ctx.cachefile.len = filename.len;
     ctx.cachefile.data = filename.data;
 
-    ctx.cachefile.len = sizeof("/Users/kindy/h/github/kindy/confby-nginx-module/abc.conf") - 1;
-    ctx.cachefile.data = ngx_palloc(cf->pool, ctx.cachefile.len);
-    ngx_memcpy(ctx.cachefile.data, "/Users/kindy/h/github/kindy/confby-nginx-module/abc.conf", ctx.cachefile.len);
-
     ngx_log_error(NGX_LOG_INFO, cf->log, 0,
-            "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\nusecache: %d\nevalurl: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
-            cmd_name, &filename, &uri, ctx.usecache, ctx.evaluri, &ctx.scheme, &ctx.noscheme_uri);
+            "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\npre_usecache: %d\nfail_usecache: %d\nevaluri: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
+            cmd_name, &filename, &uri, ctx.pre_usecache, ctx.fail_usecache, ctx.evaluri, &ctx.scheme, &ctx.noscheme_uri);
 
+
+    /* 进入 具体执行逻辑 {{{ */
     if (! ngx_strncmp(ctx.scheme.data, "file", ctx.scheme.len)) {
         if (ngx_xconf_include_uri_file(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
@@ -308,14 +407,57 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
     }
+    /* }}} */
+
+    goto done;
+
+done:
+    lua_close(L);
 
     return NGX_CONF_OK;
 
 unknow_opt:
-
     ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-            "%V: unknown option [%V] .",
-            cmd_name, arg[i]);
+            "%V: unknown option [%V].",
+            cmd_name, &arg[i]);
+
+    return NGX_CONF_ERROR;
+
+error:
+    lua_close(L);
 
     return NGX_CONF_ERROR;
 }
+
+
+int
+ngx_xconf_util_lua_pcall(ngx_conf_t *cf, lua_State *L, int nargs, int nresults, int errfunc, int keeperrmsg)
+{
+    int         rc;
+    ngx_str_t   msg;
+
+    rc = lua_pcall(L, nargs, nresults, errfunc);
+
+    if (rc != 0) {
+        msg.data = (u_char *) lua_tolstring(L, -1, &msg.len);
+
+        if (! keeperrmsg) {
+            lua_pop(L, 1);
+        }
+
+        if (msg.data == NULL) {
+            msg.data = (u_char *) "unknown reason";
+            msg.len = sizeof("unknown reason") - 1;
+        }
+
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "xconf run lua error: %V.",
+                &msg);
+
+        lua_pop(L, 1);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+

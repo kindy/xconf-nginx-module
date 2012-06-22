@@ -4,23 +4,29 @@
 #define NGX_CONF_DIRECTIVE_H
 
 #include "ngx_xconf_common.h"
+#include "ngx_xconf_util.lua.h"
 
 typedef struct {
+    lua_State       *lua;
     ngx_str_t        cachefile;
-    ngx_flag_t       usecache;
     ngx_int_t        timeout; /* s */
-    ngx_int_t        cachetime; /* s */
+    ngx_int_t        pre_usecache; /* s */
+    ngx_int_t        fail_usecache; /* s */
     ngx_str_t        uri;
     ngx_str_t        noscheme_uri;
     ngx_flag_t       evaluri;
     ngx_str_t        scheme;
-
-    ngx_pool_t      *pool;
-
 } ngx_xconf_ctx_t;
 
 char * ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+/* NGX_CONF_OK, NGX_CONF_ERROR 都是 指针，所以可以 char * */
+/* NGX_OK, NGX_ERROR 都是 int，所以函数定义是 int */
+/* 视函数用途选择合适的返回值类型吧 */
+int ngx_xconf_util_lua_pcall(ngx_conf_t *cf, lua_State *L, int nargs, int nresults, int errfunc, int keeperrmsg);
+
 char * ngx_xconf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
+
 char * ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_lua(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_luai(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
