@@ -30,6 +30,8 @@ static int ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *u
 static int ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *file,
         int cachefd, int status_code, ngx_str_t *body, ngx_xconf_ctx_t *ctx);
 
+static struct addrinfo *resolve_host(ngx_conf_t *cf, char *hostname, char *port, int use_ipv6);
+
 
 char *
 ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx)
@@ -137,12 +139,11 @@ ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_x
 static int
 ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_conf_t *cf, ngx_xconf_ctx_t *ctx)
 {
-    struct addrinfo     hints;
+    struct addrinfo    *saddr;
     ngx_str_t           file, tmpfile;
     int                 connfd, rwlen, cachefd;
     size_t              buflen = 1024 * 50;
     u_char              buf[1024 * 50], *p, *last;
-    struct addrinfo     *srvinfo;
     lua_State           *L;
     int                 narg, rc;
     int                 lua_stack_n = 0;
@@ -150,35 +151,31 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     L = ctx->lua;
 
     /* 创建连接 {{{ */
-    srvinfo = ngx_palloc(cf->pool, sizeof(struct addrinfo));
+    saddr = resolve_host(cf, (char *)host->data, (char *)port->data, 0);
 
-    connfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (connfd < 0) {
+    if (saddr == NGX_CONF_ERROR) {
+        goto error;
+    }
+
+    connfd = socket(saddr->ai_family, saddr->ai_socktype, saddr->ai_protocol);
+    dd("socket() -> %d", connfd);
+
+    if (connfd == -1) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get: create socket error.");
+                "http: socket() error: %s.",
+                strerror(errno));
 
         goto error;
     }
 
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    rc = getaddrinfo((char *)(host->data), (char *)(port->data), &hints, &srvinfo);
-    if (rc != 0) {
+    rc = connect(connfd, saddr->ai_addr, saddr->ai_addrlen);
+	if (rc == -1) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get process resp: write data to tmpfile (%V) error: \"%s\".",
-                gai_strerror(rc));
+                "http: connect() error: %s.",
+                strerror(errno));
 
         goto error;
-    }
-
-    if (connect(connfd, srvinfo->ai_addr, srvinfo->ai_addrlen)) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get: connect socket error.");
-
-        goto error;
-    }
+	}
     /* }}} */
 
     /* 发请求到服务器 {{{ */
@@ -190,9 +187,12 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
             url, host);
 
     rwlen = p - buf;
-    if (rwlen != ngx_write_fd(connfd, buf, rwlen)) {
+    rc = ngx_write_fd(connfd, buf, rwlen);
+    dd("write(%d) -> %d", connfd, rc);
+    if (rc == -1) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get: write to server error.");
+                "http: write() to server error: %s.",
+                strerror(errno));
 
         goto error;
     }
@@ -210,7 +210,8 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     ngx_memcpy(tmpfile.data + file.len, ".tmp", 4);
     tmpfile.data[tmpfile.len] = '\0';
 
-    cachefd = open((char *) tmpfile.data, O_CREAT | O_WRONLY);
+    cachefd = open((char *) tmpfile.data, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+
     if (cachefd == -1) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                 "http: open tmpfile (%V) error: \"%s\".",
@@ -405,5 +406,58 @@ ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *f
     }
 
     return NGX_OK;
+}
+
+
+/* code from weighttp */
+static struct addrinfo *
+resolve_host(ngx_conf_t *cf, char *hostname, char *port, int use_ipv6)
+{
+    int err;
+    struct addrinfo hints, *res, *res_first, *res_last;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = PF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    err = getaddrinfo(hostname, port, &hints, &res_first);
+
+    if (err) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "could not resolve hostname: %s:%s, because %s",
+                hostname, port, gai_strerror(err));
+
+        return NGX_CONF_ERROR;
+    }
+
+    /* search for an ipv4 address, no ipv6 yet */
+    res_last = NULL;
+    for (res = res_first; res != NULL; res = res->ai_next) {
+        if (res->ai_family == AF_INET && !use_ipv6)
+            break;
+        else if (res->ai_family == AF_INET6 && use_ipv6)
+            break;
+
+        res_last = res;
+    }
+
+    if (! res) {
+        freeaddrinfo(res_first);
+
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "could not resolve hostname: %s:%s, because %s",
+                hostname, port, gai_strerror(err));
+
+        return NGX_CONF_ERROR;
+    }
+
+    if (res != res_first) {
+        /* unlink from list and free rest */
+        res_last->ai_next = res->ai_next;
+        freeaddrinfo(res_first);
+        res->ai_next = NULL;
+    }
+
+    return res;
 }
 
