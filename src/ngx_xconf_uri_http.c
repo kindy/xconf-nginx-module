@@ -103,8 +103,8 @@ ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_x
         port.len = sizeof("80") - 1;
         ngx_memcpy(port.data, "80", port.len);
     }
-    hostname.data[hostname.len + 1] = '\0';
-    port.data[port.len + 1] = '\0';
+    hostname.data[hostname.len] = '\0';
+    port.data[port.len] = '\0';
 
     if (s == 3 && i <= in.len) {
         url.len = in.len - i + 1;
