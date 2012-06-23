@@ -1,0 +1,11 @@
+﻿= Name =
+
+ngx_xconf - extend Nginx 's configuration.
+
+= XX =
+
+英文版文档尚未实现，请参考[[XconfModuleZh|中文文档]]，欢迎翻译!!!
+
+= Translations =
+* [[XconfModuleZh|zh 中文]]
+
