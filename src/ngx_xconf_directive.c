@@ -59,6 +59,10 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     lua_State          *L;
     ngx_xconf_scheme_t *scheme;
 
+
+    arg = cf->args->elts;
+    cmd_name = &arg[0];
+
     scheme = ngx_xconf_schemes;
     if ((scheme == NULL) || (scheme->name.len == 0)) {
         ngx_log_error(NGX_LOG_ERR, cf->log, 0,
@@ -79,10 +83,6 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ctx.fetch_fail = 0;
     ctx.do_cachefile = 0;
-
-    arg = cf->args->elts;
-
-    cmd_name = &arg[0];
 
     need_next = 0;
     is_last_elt = 0;

@@ -143,7 +143,7 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
 {
     struct addrinfo    *saddr;
     ngx_str_t           file, tmpfile;
-    int                 connfd, rwlen, cachefd;
+    int                 rwlen, connfd = -1, cachefd = -1; /* -1 for close() in error label */
     size_t              buflen = 1024 * 50;
     u_char              buf[1024 * 50], *p, *last;
     lua_State           *L;
@@ -324,10 +324,10 @@ error:
 static int
 ngx_xconf_uri_http_load_parse_resp_lua(ngx_conf_t *cf, lua_State *L)
 {
+    int     rc;
 #if (XCONF_URI_HTTP_USE_LUA_FILE)
     size_t  len;
     char    *lua_filename;
-    int     rc;
 
     /* $conf_prefix/$filename\0 */
     len = cf->cycle->conf_prefix.len
