@@ -25,18 +25,14 @@ static const char *xconf_uri_http_parse_resp_lua_file = "xconf_uri_http_parse_re
 #endif
 
 static int ngx_xconf_uri_http_load_parse_resp_lua(ngx_conf_t *cf, lua_State *L);
-
-static int ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_conf_t *cf, ngx_xconf_ctx_t *ctx);
-static int ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *file,
-        int cachefd, int status_code, ngx_str_t *body, ngx_xconf_ctx_t *ctx);
-
+ngx_str_t *ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_conf_t *cf, ngx_xconf_ctx_t *ctx);
 static struct addrinfo *resolve_host(ngx_conf_t *cf, char *hostname, char *port, int use_ipv6);
 
 
 char *
 ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx)
 {
-    ngx_str_t   in, hostname, port, url;
+    ngx_str_t   in, hostname, port, url, *fetch_content;
     size_t      max_port_len = 5;
     u_char      c;
     size_t      i, s;
@@ -121,35 +117,34 @@ ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_x
     /* }}} */
 
 
-    /* FIXME fail_fail */
+    /* FIXME fetch_fail */
 
     /* 获取 http 数据 {{{ */
-    if (ngx_xconf_uri_http_get(&hostname, &port, &url, cf, ctx) != NGX_OK) {
-        return NGX_CONF_ERROR;
+    fetch_content = ngx_xconf_uri_http_get(&hostname, &port, &url, cf, ctx);
+    if (fetch_content == NULL) {
+        return NGX_XCONF_FETCH_ERROR;
     }
 
+    ctx->fetch_content = fetch_content;
+
+    return NGX_XCONF_FETCH_OK;
     /* }}} */
-    ctx->do_cachefile = 1;
-    return NGX_CONF_OK;
 }
 
 
-/*
- * 1. 连接获取数据错误
- * 2. 写文件错误 (x.tmp -> mv)
- */
-static int
+ngx_str_t *
 ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_conf_t *cf, ngx_xconf_ctx_t *ctx)
 {
     struct addrinfo    *saddr;
-    ngx_str_t           file, tmpfile;
-    int                 rwlen, connfd = -1, cachefd = -1; /* -1 for close() in error label */
+    ngx_str_t          *fetch_content;
+    int                 rwlen, connfd = -1; /* -1 for close() in error label */
     size_t              buflen = 1024 * 50;
     u_char              buf[1024 * 50], *p, *last;
-    lua_State           *L;
+    lua_State          *L;
     int                 narg, rc;
     int                 lua_stack_n = 0;
 
+    fetch_content = NULL;
     L = ctx->lua;
 
     /* 创建连接 {{{ */
@@ -184,6 +179,7 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     last = buf + buflen;
     p = buf;
 
+    /* TODO 请求的生成，也放到 lua 里去 */
     p = ngx_slprintf(p, last,
             "GET %V HTTP/1.0\r\nHost: %V\r\nUser-Agent: ngx-xconf\r\n\r\n",
             url, host);
@@ -200,30 +196,7 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     }
     /* }}} */
 
-    /* 准备配置文件句柄，把从服务器读到的 conf 写下来 {{{ */
-    file.len = ctx->cachefile->name.len;
-    file.data = ngx_palloc(cf->pool, file.len + 1);
-    ngx_memcpy(file.data, ctx->cachefile->name.data, file.len);
-    file.data[file.len] = '\0';
-
-    tmpfile.len = file.len + 4;
-    tmpfile.data = ngx_palloc(cf->pool, tmpfile.len + 1); /* for open '\0' */
-    ngx_memcpy(tmpfile.data, file.data, file.len);
-    ngx_memcpy(tmpfile.data + file.len, ".tmp", 4);
-    tmpfile.data[tmpfile.len] = '\0';
-
-    cachefd = open((char *) tmpfile.data, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-
-    if (cachefd == -1) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http: open tmpfile (%V) error: \"%s\".",
-                &tmpfile, strerror(errno));
-
-        goto error;
-    }
-    dd("open cachefd: %s, %d", tmpfile.data, cachefd);
-    /* }}} */
-
+    /* 数据处理 函数 */
     if (ngx_xconf_uri_http_load_parse_resp_lua(cf, L) != NGX_OK) {
         goto error;
     }
@@ -269,12 +242,14 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
         if (! lua_istable(L, -1)) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                     "http get proc resp lua: lua should return a table.");
-            lua_stack_n = 1;
 
+            lua_stack_n = 1;
             goto error;
         } else {
             int         status_code;
-            ngx_str_t   body, status_txt;
+            ngx_str_t   status_txt;
+            u_char     *p;
+
             /* ret{} */
             lua_getfield(L, -1, "status_txt"); /* status_txt, ret{} */
             lua_getfield(L, -2, "status_code"); /* status_code, status_txt, ret{} */
@@ -289,16 +264,35 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
             }
 
             status_code = lua_tonumber(L, -2);
-            body.data = (u_char *)lua_tolstring(L, -1, &body.len);
+
+            if (status_code != 200) {
+                ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                        "http get process resp: get from \"%V\" got status code [%d], 200 needed.",
+                        &ctx->noscheme_uri, status_code);
+
+                goto error;
+            }
+
+            fetch_content = ngx_palloc(cf->pool, sizeof(ngx_str_t));
+            if (fetch_content == NULL) {
+                goto error;
+            }
+
+            p = (u_char *)lua_tolstring(L, -1, &fetch_content->len);
+            fetch_content->data = ngx_palloc(cf->pool, fetch_content->len);
+
+            if (fetch_content->data == NULL) {
+                fetch_content = NULL;
+                goto error;
+            }
+
+            ngx_memcpy(fetch_content->data, p, fetch_content->len);
+
             status_txt.data = (u_char *)lua_tolstring(L, -1, &status_txt.len);
 
             ngx_log_error(NGX_LOG_INFO, cf->log, 0,
                     "\n- - - - http get lua return - - - -\nstatus_code: %d\nstatus_txt: %V\nbody: %V\n- - - - - - - -",
-                    status_code, &status_txt, &body);
-
-            if (ngx_xconf_uri_http_process_resp(cf, &tmpfile, &file, cachefd, status_code, &body, ctx) != NGX_OK) {
-                goto error;
-            }
+                    status_code, &status_txt, fetch_content);
 
             goto done;
         }
@@ -308,16 +302,14 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
 done:
     lua_pop(L, lua_stack_n);
     close(connfd);
-    close(cachefd);
 
-    return NGX_OK;
+    return fetch_content;
 
 error:
     lua_pop(L, lua_stack_n);
     close(connfd);
-    close(cachefd);
 
-    return NGX_ERROR;
+    return NULL;
 }
 
 
@@ -361,48 +353,6 @@ ngx_xconf_uri_http_load_parse_resp_lua(ngx_conf_t *cf, lua_State *L)
                 &msg);
 
         lua_pop(L, 1);
-
-        return NGX_ERROR;
-    }
-
-    return NGX_OK;
-}
-
-
-static int
-ngx_xconf_uri_http_process_resp(ngx_conf_t *cf, ngx_str_t *tmpfile, ngx_str_t *file,
-        int cachefd, int status_code, ngx_str_t *body, ngx_xconf_ctx_t *ctx)
-{
-    int     crwlen;
-
-    if (status_code != 200) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get process resp: get from \"%V\" got status code [%d] error, 200 needed.",
-                &ctx->noscheme_uri, status_code);
-
-        return NGX_ERROR;
-    }
-
-    crwlen = write(cachefd, body->data, body->len);
-    if (crwlen == -1) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get process resp: write data to tmpfile (%V) error: \"%s\".",
-                tmpfile, strerror(errno));
-
-        return NGX_ERROR;
-    } else if ((size_t)crwlen != body->len) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get process resp: write data to tmpfile (%V) error w: %d, rw: %d.",
-                tmpfile, body->len, crwlen);
-
-        return NGX_ERROR;
-    }
-
-    close(cachefd);
-
-    if (rename((char *) tmpfile->data, (char *) file->data) != 0) {
-        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                "http get process resp: move tmpfile to file error.");
 
         return NGX_ERROR;
     }

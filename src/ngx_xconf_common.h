@@ -5,6 +5,7 @@
 
 #include <nginx.h>
 #include <ngx_core.h>
+#include <ngx_files.h>
 
 #include <setjmp.h>
 #include <stdint.h>

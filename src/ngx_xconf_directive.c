@@ -81,7 +81,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ctx.pre_usecache = -1;   /* 默认不使用 cachefile */
     ctx.fail_usecache = -1;   /* 默认不使用 cachefile */
 
-    ctx.fetch_fail = 0;
+    ctx.fetch_content = NULL;
     ctx.do_cachefile = 0;
 
     need_next = 0;
@@ -247,12 +247,14 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
             lua_pop(L, 1);
 
+            rv = NULL;
             goto error;
         }
     }
     /* 这个 lua 文件会创建 若干个 全局函数，如: format */
 
     if (ngx_xconf_util_lua_pcall(cf, L, 0, 0, 0, 0) != NGX_OK) {
+        rv = NULL;
         goto error;
     }
     /* }}} */
@@ -286,6 +288,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
         lua_pushlstring(L, (char *) uri.data, uri.len);
         if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+            rv = NULL;
             goto error;
         }
         uri.data = (u_char *) lua_tolstring(L, -1, &uri.len);
@@ -301,6 +304,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 "%V: must give us uri.",
                 cmd_name);
 
+        rv = NULL;
         goto error;
     }
 
@@ -365,6 +369,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                         "%V: uri (%V...) have no valid scheme name.",
                         cmd_name, &tmp_scheme);
 
+                rv = NULL;
                 goto error;
             }
 
@@ -377,6 +382,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                     "%V: uri (%V) have no valid scheme name.",
                     cmd_name, &uri);
 
+            rv = NULL;
             goto error;
         }
 
@@ -403,6 +409,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 "%V: no scheme found for \"%V\".",
                 cmd_name, &ctx.scheme);
 
+        rv = NULL;
         goto error;
     }
     /* }}} */
@@ -424,6 +431,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
         lua_pushlstring(L, (char *) filename.data, filename.len);
         if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+            rv = NULL;
             goto error;
         }
         filename.data = (u_char *) lua_tolstring(L, -1, &filename.len);
@@ -434,6 +442,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         lua_pop(L, 1);
 
         if (ngx_conf_full_name(cf->cycle, &filename, 1) != NGX_OK) {
+            rv = NULL;
             goto error;
         }
         /* }}} */
@@ -444,6 +453,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                     "%V: alloc cachefile error.",
                     cmd_name);
 
+            rv = NULL;
             goto error;
         }
         ngx_memzero(ctx.cachefile, sizeof(ngx_file_t));
@@ -465,13 +475,14 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                             "%V: get file \"%V\" info error: %s.",
                             cmd_name, file->name, strerror(errno));
 
+                    rv = NULL;
                     goto error;
                 }
             /* 获取文件信息 OK, 有没可能是个 目录 ?? ，如果谁这么配置 !!! */
             } else {
                 int     now;
 
-                /* 只要文件存在就是用 */
+                /* 只要文件存在就用 */
                 if (ctx.pre_usecache == 0) {
                     goto do_cachefile;
                 }
@@ -495,28 +506,139 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             cmd_name, &filename, &uri, ctx.pre_usecache, ctx.fail_usecache, ctx.evaluri, &ctx.scheme->name, &ctx.noscheme_uri);
 
     /* 执行具体 scheme {{{ */
-    if (scheme->handler(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
-        return NGX_CONF_ERROR;
-    } else {
+    rv = scheme->handler(cf, cmd, conf, &ctx);
+
+    if (rv == NGX_CONF_OK) {
+        goto done;
+    } else if (rv == NGX_XCONF_FETCH_ERROR) {
+        /* do fail_usecache */
         if (scheme->usecache) {
-            if (ctx.fetch_fail) {
-                goto fetch_fail;
+            goto fetch_fail;
+        } else {
+            /* 不可能 */
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "if you see this error, please report it to author with \"%V\".",
+                    &scheme->name);
+
+            rv = NULL;
+            goto error;
+        }
+    } else if (rv == NGX_XCONF_FETCH_OK) {
+        if (scheme->usecache) {
+            if (ctx.fetch_content != NULL) {
+                goto save_cachefile;
             } else if (ctx.do_cachefile) {
                 goto do_cachefile;
             }
         }
+
+        goto done;
+    } else {
+        goto error;
     }
     /* }}} */
 
     goto done;
 
 fetch_fail:
-    /* FIXME fail_usecache */
-    ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-            "%V: fetch fail.",
-            cmd_name);
+    dd("fail-usecache: %d, %d", (int)ctx.scheme->fail_usecache, (int)ctx.fail_usecache);
 
+    if (ctx.scheme->fail_usecache && ctx.fail_usecache != -1) {
+        /* 删除 */
+        if (ctx.fail_usecache != -2) {
+            ngx_delete_file(ctx.cachefile->name.data);
+
+            rv = NULL;
+            goto error;
+
+        } else if (ctx.fail_usecache >= 0) {
+            ngx_file_t  *file;
+
+            file = ctx.cachefile;
+
+            /* 获取文件信息 FAIL */
+            if (ngx_file_info(file->name.data, &file->info) == -1) {
+                ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                        "%V: get file \"%V\" info in fetch_fail error: %s.",
+                        cmd_name, file->name, strerror(errno));
+
+                rv = NULL;
+                goto error;
+            /* 获取文件信息 OK, 有没可能是个 目录 ?? ，如果谁这么配置 !!! */
+            } else {
+                int     now;
+
+                /* 只要文件存在就用 */
+                if (ctx.fail_usecache == 0) {
+                    goto do_cachefile;
+                }
+
+                ngx_time_update();
+                now = (int)ngx_time();
+
+                dd("fail-usecache now: %d, mtime: %d, diff: %d, pref: %d.",
+                        now, (int)file->info.st_mtime, now - (int)file->info.st_mtime, (int)ctx.fail_usecache);
+
+                if (now - file->info.st_mtime <= ctx.fail_usecache) {
+                    goto do_cachefile;
+                }
+            }
+        } else {
+            /* 不可能 */
+
+            rv = NULL;
+            goto error;
+        }
+    }
+
+    rv = NULL;
     goto error;
+
+save_cachefile:
+    {
+        int rc;
+
+        ctx.cachefile->fd = ngx_open_file(ctx.cachefile->name.data, O_WRONLY, O_CREAT | O_TRUNC , S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+
+        if (ctx.cachefile->fd == NGX_INVALID_FILE) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%V: open (%V) error: \"%s\".",
+                    cmd_name, &ctx.cachefile->name, strerror(errno));
+
+            rv = NULL;
+            goto error;
+        }
+
+        dd("open cachefd: %s, %d", (char *)ctx.cachefile->name.data, ctx.cachefile->fd);
+
+        rc = ngx_write_fd(ctx.cachefile->fd, ctx.fetch_content->data, ctx.fetch_content->len);
+        if (rc == NGX_FILE_ERROR) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%V: write data to (%V) error: \"%s\".",
+                    cmd_name, ctx.cachefile->name, strerror(errno));
+
+            rv = NULL;
+            goto error;
+        } else if ((size_t)rc != ctx.fetch_content->len) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%V: write data to (%V) incomplete: %z of %uz.",
+                    cmd_name, ctx.cachefile->name, rc, ctx.fetch_content->len);
+
+            rv = NULL;
+            goto error;
+        }
+
+        if (ngx_close_file(ctx.cachefile->fd) == NGX_FILE_ERROR) {
+            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                    "%: close cachefile error.",
+                    cmd_name);
+
+            rv = NULL;
+            goto error;
+        }
+
+        goto do_cachefile;
+    }
 
 do_cachefile:
     if (! scheme->usecache) {
@@ -524,6 +646,7 @@ do_cachefile:
                 "%V: current scheme \"%V\" can not usecache.",
                 cmd_name, &scheme->name);
 
+        rv = NULL;
         goto error;
     }
 
@@ -564,7 +687,7 @@ unknow_opt:
 error:
     lua_close(L);
 
-    return NGX_CONF_ERROR;
+    return rv == NULL ? NGX_CONF_ERROR : rv;
 }
 
 
