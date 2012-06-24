@@ -67,31 +67,41 @@ include_uri
 
 **default:** *无*
 
-**context:** *任意位置*
+**context:** 任意位置(几乎)
 
 此指令使用上类似 include ，可以在任意位置插入配置。
-只不过除了本地文件外，还支持 http 远程文件 (暂只支持 HTTP/1.0 不支持 chunck 编码)
+只不过除了本地文件外，还支持 http 远程文件 (暂只支持 HTTP/1.0 亦不支持 chunck 编码)
+
+之所以说 include_uri 几乎可以在任意位置使用，是因为有些指令块(block)跳过了标准指令处理逻辑，他们自己负责对块内的指令进行解析。
+
+已知有 charset_map {} geo {} map {} split_clients {} types {} 。
+
+**include 在这些指令块内的行为与标准 include 亦不完全相同**
 
 ### 参数
 
-    <code>uri</code> - 配置地址(支持变量插值，可通过 -n 关闭)
-        http    -> http://abc.com:81/xxx
-        http    -> //abc.com/xx         <code>//</code> 开头，认为是 http 类型
-        file    -> ./abc/x.conf         <code>./</code> 或者 </code>/</code> 开头，认为是 file 类型
-        file    -> file://abc/x.conf
-        file    -> file://$conf_prefix/abc/x.conf
-        file    -> file:///abc/x.conf
-        file    -> /abc/x.conf
-        lua     -> lua:/abc.lua         (即将支持)
-        lua     -> lua:abc.lua          (即将支持)
-        luai    -> luai: return "listen 12;" (即将支持)
 
-以上所有相对路径都基于 conf_prefix，变量用法见下面
+`uri` - 配置地址(支持变量插值，可通过 -n 关闭)
+
+参数使用 [URI 形式](http://en.wikipedia.org/wiki/URI_scheme), 我们使用以下形式:
+
+    <scheme name> : <hierarchical part> [ ? <query> ] [ # <fragment> ]
+
+比如 `<http://config.abc.com:9999/ngx/all.conf?host=$hostname`>
+
+当前可用 scheme 有 file, http
+
+file 和 http URI 中的 scheme name 可以省略，识别(在执行变量插值后进行)规则为:
+
+1. 如果以 `//` 开头，认为是 http
+1. 如果以 `./` 或者 `/` 开头，认为是 file
+
+在[下面](http://wiki.nginx.org/XconfModuleZh#scheme_-_http)有每种 scheme 的用法
 
 ### 选项
 
 
-1. `-n` --- 不对 uri 做变量插值
+1. `-n` --- 不对 uri 做变量插值 (估计仅对 luai 有意义)
 1. `-o $file.abc.conf` --- cachefile 名 (支持变量, 下面 cachefile 相关选项对 file 无效)
 #:  如果不指定 cachefile ，默认为 "$file.l$line.conf"
 1. `-O abc` --- cachefile 名 (支持变量)
@@ -103,6 +113,26 @@ include_uri
 #:  -1 - 不直接使用 (默认)
 #:  0  - 只要缓存文件存在就使用
 #:  >0 - 根据 mtime 判断
+
+**注**
+
+1. 时长相关的值支持 Nginx 常用的 快速写法，如 `1d 2h` 表示 "1天 + 2小时" 详见 [[ConfigNotation#Time]]
+1. 路径相关的值，不特别说明，都是相对 $conf_prefix 展开的
+
+### 示例
+
+
+
+    # 保存 http://config-server/app1.conf?host=$hostname 的内容到 "当前文件名.main.conf" 内并加载
+    # 其中 $hostname 会被替换成当前机器的 hostname
+    include_uri -I main '//config-server/app1.conf?host=$hostname';
+
+
+    # 加载 $conf_prefix/abc.conf 文件，类似于 include abc.conf;
+    include_uri './abc.conf';
+    # 上面指令的其他写法: include_uri '$conf_prefix/abc.conf';
+    # 上面指令的更多写法: include_uri 'file://$conf_prefix/abc.conf';
+
 
 ### 即将实现选项
 
@@ -123,18 +153,6 @@ include_uri
 #:  值引用方法 `${meta.db.xxx}`
 #:  计划支持 lua, json 格式
 
-备注
-
-1. 所有时长相关的值支持 Nginx 常用的 快速写法，如 `1d 2h` 表示 "1天 + 2小时" 详见 [[ConfigNotation#Time]]
-
-### 示例
-
-
-
-    include_uri -I main '//config-server/web1.conf?host=$hostname';
-
-
-
 ### 变量插值语法
 
     $abc - [a-zA-Z][a-zA-Z0-9_]
@@ -154,8 +172,80 @@ include_uri
 变量其他
 
 1. 如果想插入 $ 可用 $$
-1. 如果 $ 后面字符不匹配 [a-zA-Z{$] 那么 $ 及这个字符会被原样使用 "$/a" -> "$/a"
+1. 如果 $ 后面字符不匹配 [a-zA-Z{$] 那么 $ 及这个字符会被原样使用 "$/a" -> "$/a" <br>(这么做不安全，后续可能有更多扩展的用法，这样原始配置的行为就不可控了)
 1. 如果变量名对应的值不存在，会插入空 "a${xx}b" -> "ab" 如果 xx 不存在
+
+### scheme - http
+
+
+uri 示例
+
+1. `<http://config.abc.com:9999/ngx/all.conf`>
+1. `//config.abc.com:9999/ngx/all.conf`
+
+使用示例
+
+
+    # 保存 http://config-server/app1.conf?host=$hostname 的内容到 "当前文件名.main.conf" 内并使用
+    # 其中 $hostname 会被替换成当前机器的 hostname
+    include_uri -I main '//config-server/app1.conf?host=$hostname';
+
+    # 保存远程配置内容到 "$file.main.l$line.conf" 内并使用
+    include_uri -O main '//config-server/app1.conf';
+
+    # 加载远程配置前先看看 "$file.main.l$line.conf" 是否存在
+    # 如果这个文件 1分钟内修改过，就不去远程抓取 而 直接使用
+    # 如果文件不存在或者太旧，获取远程配置内容到 "$file.main.l$line.conf" 内并使用
+    include_uri -c 1m -O main '//config-server/app1.conf';
+
+    # 获取远程配置内容到 "$file.main.conf" 内并使用
+    # 如果远程文件获取失败，但是本地有缓存，且更新时间在 1小时内就使用缓存的文件
+    include_uri -C 1h -I main '//config-server/app1.conf';
+
+    # 如果上面的指令获取到的配置解析错误，那么本地缓存文件会被自动删除
+    # 可以使用 -K 保留解析出错的本地缓存文件，除了调试，一般不用吧?
+    include_uri -K -o '$conf_prefix/main.conf' '//config-server/app1.conf';
+
+
+### scheme - file
+
+
+这个跟 include 几乎一样
+
+file 类型基本上用不上什么选项，除了 `-n` 。但有谁会在路径里写原始的 `$` 呢。
+
+uri 示例
+
+1. `./abc/x.conf`           - include abc/x.conf;
+1. `/abc/def/x.conf`        - include /abc/def/x.conf;
+1. `file://abc/x.conf`      - include abc/x.conf;       (注意 : 后 / 的个数)
+1. `file:///abc/def/x.conf` - include /abc/def/x.conf;
+
+### scheme - lua (ing)
+
+
+uri 示例
+
+1. `lua:/abc.lua`
+1. `lua:abc.lua`
+
+lua 没有使用 http 那样复杂的模式，直接指定本地文件路径就行了。
+
+指令会读取相应文件内容，并执行，将执行结果保存到 `-o` 等选项指定的 cachefile 中，
+然后使用这些 cachefile 。如果 cachefile 解析出错会被删除，除非使用了 `-K` 选项。
+
+### scheme - luai (ing)
+
+
+luai 的意思是 lua inline
+
+uri 示例
+
+1. `'luai: return "listen 12;"'`
+
+指令会把 luai: 后面的内容作为 lua 代码执行，并将结果保存到 cachefile 中(同 lua 类似)。
+
+一般会配合 `-n` 选项使用 luai ，因为 lua 代码一般不需要插值，这些变量值可以在 lua 环境中直接获得
 
 
 Known Issues
@@ -236,7 +326,7 @@ Changes
 v0.1.3
 ------
 
-24 June, 2012
+24 Jun, 2012
 
 * 功能:
 	* -K 的支持
@@ -246,7 +336,7 @@ v0.1.3
 v0.1
 ----
 
-23 June, 2012
+23 Jun, 2012
 
 * 功能: include_uri
 	* file 类型支持
@@ -259,6 +349,11 @@ v0.1
 * [echosrv of dermesser](https://github.com/dermesser/echosrv)
 * nginx core
 * ngx_lua
+
+v0
+--
+
+20 Jun, 2012
 
 Test Suite
 ==========
