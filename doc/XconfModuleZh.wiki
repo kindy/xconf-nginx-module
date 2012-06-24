@@ -10,7 +10,7 @@ This module is under active development and is not production ready yet(尚未�
 
 = Version =
 
-This document describes ngx_xconf [https://github.com/kindy/xconf-nginx-module v0.1] released on 23 June 2012.
+This document describes ngx_xconf [https://github.com/kindy/xconf-nginx-module v0.1.3] released on 24 June 2012.
 
 = Synopsis =
 
@@ -171,7 +171,7 @@ The code repository of this project is hosted on github at [http://github.com/ki
 = Installation =
 
 # 下载并安装 LuaJIT 2.0 (推荐) 或者 Lua 5.1 (Lua 5.2 尚不支持). LuaJIT 可以从 [http://luajit.org/download.html the LuaJIT download page] 下载， Lua 可以在 [http://www.lua.org/ the standard Lua homepage] 找到.
-# 下载 ngx_xconf 模块 v0.1 [https://github.com/kindy/xconf-nginx-module/tags 下载页面]
+# 下载 ngx_xconf 模块 [https://github.com/kindy/xconf-nginx-module/tags 下载页面]
 # 下载 Nginx v1.2.1 [http://nginx.org/en/download.html 下载页面] [http://nginx.org/download/nginx-1.2.1.tar.gz v1.2.1 链接]
 
 参考步骤:
@@ -211,6 +211,15 @@ Please report bugs or submit patches by:
 # Creating a ticket on the [http://github.com/kindy/xconf-nginx-module/issues GitHub Issue Tracker]
 
 = Changes =
+
+== v0.1.3 ==
+
+24 June, 2012
+
+* 功能:
+** -K 的支持
+** -c 的实现
+* 一些bug修正
 
 == v0.1 ==
 

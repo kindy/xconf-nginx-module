@@ -9,8 +9,8 @@ Status
     yet(尚未用于生产环境!).
 
 Version
-    This document describes ngx_xconf v0.1
-    (<https://github.com/kindy/xconf-nginx-module>) released on 23 June
+    This document describes ngx_xconf v0.1.3
+    (<https://github.com/kindy/xconf-nginx-module>) released on 24 June
     2012.
 
 Synopsis
@@ -178,7 +178,7 @@ Installation
         LuaJIT download page (<http://luajit.org/download.html>) 下载， Lua 可以在
         the standard Lua homepage (<http://www.lua.org/>) 找到.
 
-    2.  下载 ngx_xconf 模块 v0.1 下载页面
+    2.  下载 ngx_xconf 模块 下载页面
         (<https://github.com/kindy/xconf-nginx-module/tags>)
 
     3.  下载 Nginx v1.2.1 下载页面 (<http://nginx.org/en/download.html>) v1.2.1 链接
@@ -219,6 +219,17 @@ Bugs and Patches
         (<http://github.com/kindy/xconf-nginx-module/issues>)
 
 Changes
+  v0.1.3
+    24 June, 2012
+
+    *   功能:
+
+    *   -K 的支持
+
+    *   -c 的实现
+
+    *   一些bug修正
+
   v0.1
     23 June, 2012
 
@@ -310,9 +321,12 @@ POD ERRORS
     Around line 344:
         =back without =over
 
-    Around line 470:
+    Around line 465:
+        '=item' outside of any '=over'
+
+    Around line 508:
         =back without =over
 
-    Around line 532:
+    Around line 570:
         =back without =over
 
