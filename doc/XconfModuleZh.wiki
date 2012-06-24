@@ -81,29 +81,41 @@ ngx_xconf 模块使得 Nginx 支持使用远程配置文件，这样，即使我
 以上所有相对路径都基于 conf_prefix，变量用法见下面
 
 === 选项 ===
-    <code>-n</code> 不对 uri 做变量插值
-    <code>-o $file.abc.conf</code> - 缓存文件名 (支持变量)
-        本地文件名，默认 "$file.l$line.conf" (对 file 无效)
-    <code>-O <xx> </code>- 缓存文件名 (支持变量)
-        -o 的扩展，会把值放到 "$file.<xx>.l$line.conf"
-    <code>-I <xx> </code>- 缓存文件名 (使用 I 仅仅因为它在 O 左边) (支持变量)
-        -o 的扩展，会把值放到 "$file.<xx>.conf" (有时候，行号会变化)
 
-以下选项尚未实现
-    <code>-t 4s </code>- (timeout) uri 执行超时(仅 http 有效)
-        0  - 死等 (受系统超时影响)
-        >0 - 超时
-    <code>-c 5s </code>- (pre-usecache) 如果缓存文件存在，是否直接使用 (-c 和 -C 对 file: 无效)
-        -1 - 不直接使用
-        0  - 只要缓存文件存在就使用
-        >0 - 根据 mtime 判断
-    <code>-C 5m</code> (fail-usecache) - 如果生成配置失败(如http)，是否使用缓存文件
-        -1 - 不使用，保留缓存文件
-        -2 - 不使用，删除缓存文件
-        0  - 只要缓存文件存在就使用
-        >0 - 根据 mtime 判断
+# <code>-n</code> --- 不对 uri 做变量插值
+# <code>-o $file.abc.conf</code> --- cachefile 名 (支持变量, 下面 cachefile 相关选项对 file 无效)
+#:  如果不指定 cachefile ，默认为 "$file.l$line.conf"
+# <code>-O abc</code> --- cachefile 名 (支持变量)
+#:  -o 的扩展，等同于 <code>-o "$file.abc.l$line.conf"</code> (有行号，cachefile 冲突的几率较小)
+# <code>-I abc</code> --- cachefile 名 (使用 I 仅仅因为它在 O 左边)
+#:  -o 的扩展，等同于 <code>-o "$file.abc.conf"</code> (有时候，行号会变化)
+# <code>-K</code> --- 保留 (keep) 解析出错的 cachefile (默认删除) (这个删除会在所有尝试解析配置的时候，如 pre 和 after)
+# <code>-c 5s</code> --- pre-usecache 如果 cachefile 存在，是否直接使用
+#:  -1 - 不直接使用 (默认)
+#:  0  - 只要缓存文件存在就使用
+#:  >0 - 根据 mtime 判断
 
-时间选项支持 Nginx 常用的 快速写法，如 <code>1d 2h</code> 表示 "1天 + 2小时"
+=== 即将实现选项 ===
+
+# <code>-t 4s</code> --- (timeout) uri 执行超时(仅 http 有效)
+#:  0  - 死等 (受系统超时影响)
+#:  >0 - 超时
+# <code>-C 5m</code> --- fail-usecache 如果获取配置失败(如http)，是否使用 cachefile
+#:  -1 - 不使用，但保留缓存文件 (默认)
+#:  -2 - 不使用，且删除缓存文件
+#:  0  - 只要缓存文件存在就使用
+#:  >0 - 根据 mtime 判断
+# <code>-m "abc.lua"</code> --- meta 文件位置(一般用于提供配置信息 和 变量，比如用于 uri 生成 或者 lua 指令用其生成模板之类)
+#:  可指定多个
+#:  path 可提供 meta namespace, 默认是 main
+#:  namespace 会覆盖
+#:  语法为 <code>-m "db:$conf_prefix/db.lua"</code> 命名规则: <code>[a-z][_a-z0-9]*</code>
+#:  值引用方法 <code>${meta.db.xxx}</code>
+#:  计划支持 lua, json 格式
+
+备注
+
+# 所有时长相关的值支持 Nginx 常用的 快速写法，如 <code>1d 2h</code> 表示 "1天 + 2小时" 详见 [[ConfigNotation#Time]]
 
 === 示例 ===
 

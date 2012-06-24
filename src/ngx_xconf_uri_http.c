@@ -121,13 +121,15 @@ ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_x
     /* }}} */
 
 
+    /* FIXME fail_fail */
+
     /* 获取 http 数据 {{{ */
     if (ngx_xconf_uri_http_get(&hostname, &port, &url, cf, ctx) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
     /* }}} */
-
+    ctx->do_cachefile = 1;
     return NGX_CONF_OK;
 }
 
@@ -199,9 +201,9 @@ ngx_xconf_uri_http_get(ngx_str_t *host, ngx_str_t *port, ngx_str_t *url, ngx_con
     /* }}} */
 
     /* 准备配置文件句柄，把从服务器读到的 conf 写下来 {{{ */
-    file.len = ctx->cachefile.len;
+    file.len = ctx->cachefile->name.len;
     file.data = ngx_palloc(cf->pool, file.len + 1);
-    ngx_memcpy(file.data, ctx->cachefile.data, file.len);
+    ngx_memcpy(file.data, ctx->cachefile->name.data, file.len);
     file.data[file.len] = '\0';
 
     tmpfile.len = file.len + 4;

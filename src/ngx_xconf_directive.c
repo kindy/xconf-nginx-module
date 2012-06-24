@@ -11,11 +11,41 @@
 
 static size_t max_scheme_len = 100;
 
+static ngx_xconf_scheme_t ngx_xconf_schemes[] = {
+    { ngx_string("file"),
+      ngx_xconf_include_uri_file,
+      1,
+      0, 0, 0
+    },
+
+    { ngx_string("http"),
+      ngx_xconf_include_uri_http,
+      1,
+      1, 1, 1
+    },
+
+    /*
+    { ngx_string("lua"),
+      ngx_xconf_include_uri_lua,
+      1,
+      1, 1, 1
+    },
+
+    { ngx_string("luai"),
+      ngx_xconf_include_uri_luai,
+      1,
+      1, 1, 1
+    },
+    */
+
+    { ngx_null_string, NULL, 0, 0, 0, 0 }
+};
+
 
 char *
 ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_str_t          *arg, uri, filename;
+    ngx_str_t          *arg, uri, filename, scheme_name;
     ngx_xconf_ctx_t     ctx;
     ngx_flag_t          is_last_elt;
     ngx_uint_t          i;
@@ -27,14 +57,28 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     char               *rv;
     u_char             *s; /* 用于临时分配内存用 */;
     lua_State          *L;
+    ngx_xconf_scheme_t *scheme;
+
+    scheme = ngx_xconf_schemes;
+    if ((scheme == NULL) || (scheme->name.len == 0)) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "%V: no scheme define.",
+                cmd_name);
+
+        return NGX_CONF_ERROR;
+    }
 
     /* 参数说明见 README */
 
     uri.len = 0;        /* 如果没设定报错 */
     filename.len = 0;   /* 如果没设定就默认给一个 */
     ctx.evaluri = 1;    /* 默认 eval uri */
+    ctx.keep_error_cachefile = 0;   /* 默认删除解析出错的 cachefile */
     ctx.pre_usecache = -1;   /* 默认不使用 cachefile */
     ctx.fail_usecache = -1;   /* 默认不使用 cachefile */
+
+    ctx.fetch_fail = 0;
+    ctx.do_cachefile = 0;
 
     arg = cf->args->elts;
 
@@ -128,6 +172,9 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                     goto unknow_opt;
                 }
                 switch(arg[i].data[1]) {
+                    case 'K':
+                        ctx.keep_error_cachefile = 1;
+                        break;
                     case 'n':
                         ctx.evaluri = 0;
                         break;
@@ -234,6 +281,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     lua_setfield(L, LUA_GLOBALSINDEX, "var_ctx");
     /* }}} */
 
+    /* 对 uri 进行变量插值 {{{ */
     if (ctx.evaluri) {
         lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
         lua_pushlstring(L, (char *) uri.data, uri.len);
@@ -258,19 +306,17 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ctx.uri.len = uri.len;
     ctx.uri.data = uri.data;
+    /* }}} */
 
-    /* 计算 uri 的 scheme {{{ */
+    /* 计算 uri 的 scheme_name {{{ */
     /* 如果以 '//' 开头 认为是 http: */
     if (uri.len > 2 && uri.data[0] == '/' && uri.data[1] == '/') {
         ctx.noscheme_uri.data = uri.data;
         ctx.noscheme_uri.len = uri.len;
 
-        ctx.scheme.len = sizeof("http") - 1;
-        ctx.scheme.data = ngx_palloc(cf->pool, ctx.scheme.len);
-        ctx.scheme.data[0] = 'h';
-        ctx.scheme.data[1] = 't';
-        ctx.scheme.data[2] = 't';
-        ctx.scheme.data[3] = 'p';
+        scheme_name.len = sizeof("http") - 1;
+        scheme_name.data = ngx_palloc(cf->pool, scheme_name.len + 1);
+        ngx_cpystrn(scheme_name.data, (u_char *)"http", scheme_name.len + 1);
     /* 如果以 '/' 或 './' 开头 认为是 file: */
     } else if (uri.data[0] == '/'
             || (uri.len > 2 && uri.data[0] == '.' && uri.data[1] == '/')) {
@@ -280,27 +326,22 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         size_t len = uri.len - (is_abs ? 0 : 2);
 
         ctx.noscheme_uri.len = len + 2;
-        ctx.noscheme_uri.data = ngx_palloc(cf->pool, len + 2);
+        ctx.noscheme_uri.data = ngx_palloc(cf->pool, len + 2 + 1);
         ctx.noscheme_uri.data[0] = '/';
         ctx.noscheme_uri.data[1] = '/';
+        ngx_cpystrn(ctx.noscheme_uri.data + 2, data, len + 1);
 
-        /* XXX len-- 的行为是否完全可预测 ???? */
-        while (len-- > 0) { ctx.noscheme_uri.data[2 + len] = data[len]; }
-
-        ctx.scheme.len = sizeof("file") - 1;
-        ctx.scheme.data = ngx_palloc(cf->pool, ctx.scheme.len);
-        ctx.scheme.data[0] = 'f';
-        ctx.scheme.data[1] = 'i';
-        ctx.scheme.data[2] = 'l';
-        ctx.scheme.data[3] = 'e';
+        scheme_name.len = sizeof("file") - 1;
+        scheme_name.data = ngx_palloc(cf->pool, scheme_name.len + 1);
+        ngx_cpystrn(scheme_name.data, (u_char *)"file", scheme_name.len + 1);
     } else {
         u_char      c;
-        ngx_str_t   scheme;
+        ngx_str_t   tmp_scheme;
         size_t      i, maxi, found;
 
         /* find scheme: [a-z_][a-z_0-9+.-]: , max_scheme_len */
-        scheme.data = ngx_palloc(cf->pool, max_scheme_len);
-        scheme.len = 0;
+        tmp_scheme.data = ngx_palloc(cf->pool, max_scheme_len);
+        tmp_scheme.len = 0;
         i = 0;
         maxi = uri.len - 1;
         found = 0;
@@ -313,8 +354,8 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 break;
             }
 
-            scheme.data[i] = c;
-            scheme.len++;
+            tmp_scheme.data[i] = c;
+            tmp_scheme.len++;
             if ((c >= 'a' && c <= 'z')
                     || (c >= 'A' && c <= 'Z')
                     || (c >= '0' && c <= '9')
@@ -322,7 +363,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             } else {
                 ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                         "%V: uri (%V...) have no valid scheme name.",
-                        cmd_name, &scheme);
+                        cmd_name, &tmp_scheme);
 
                 goto error;
             }
@@ -331,7 +372,7 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             i++;
         }
 
-        if (! (found && scheme.len)) {
+        if (! (found && tmp_scheme.len)) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
                     "%V: uri (%V) have no valid scheme name.",
                     cmd_name, &uri);
@@ -339,75 +380,172 @@ ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             goto error;
         }
 
-        ctx.scheme.len = scheme.len;
-        ctx.scheme.data = scheme.data;
+        scheme_name.len = tmp_scheme.len;
+        scheme_name.data = tmp_scheme.data;
+        scheme_name.data[tmp_scheme.len] = '\0';
 
         /* 1 -> the ':' after scheme name */
-        ctx.noscheme_uri.len = uri.len - scheme.len - 1;
-        ctx.noscheme_uri.data = uri.data + scheme.len + 1;
+        ctx.noscheme_uri.len = uri.len - tmp_scheme.len - 1;
+        ctx.noscheme_uri.data = uri.data + tmp_scheme.len + 1;
     }
     /* }}} */
 
-    /* XXX 有些 scheme 不需要 filename ，如 file {{{ */
-    if (! (filename.len)) {
-        filename.len = ofilename_prefix.len + ofilename_suffix.len + sizeof(".") - 1;
-        filename.data = ngx_palloc(cf->pool, filename.len + 1);
-        ngx_snprintf(filename.data, filename.len,
-                "%V.%V",
-                &ofilename_prefix, &ofilename_suffix);
-    }
-
-    /* }}} */
-    /* FIXME filename.data 是否需要 free ?? */
-    lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
-    lua_pushlstring(L, (char *) filename.data, filename.len);
-    if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
-        goto error;
-    }
-    filename.data = (u_char *) lua_tolstring(L, -1, &filename.len);
-    s = ngx_palloc(cf->pool, filename.len + 1);
-    ngx_cpystrn(s, filename.data, filename.len + 1); /* 让 ngx_cpystrn 帮忙添加个 \0 */
-    filename.data = s;
-    s = NULL;
-    lua_pop(L, 1);
-
-    if (ngx_conf_full_name(cf->cycle, &filename, 1) != NGX_OK) {
-        goto error;
-    }
-
-    ctx.cachefile.len = filename.len;
-    ctx.cachefile.data = filename.data;
-
-    ngx_log_error(NGX_LOG_INFO, cf->log, 0,
-            "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\npre_usecache: %d\nfail_usecache: %d\nevaluri: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
-            cmd_name, &filename, &uri, ctx.pre_usecache, ctx.fail_usecache, ctx.evaluri, &ctx.scheme, &ctx.noscheme_uri);
-
-
-    /* 进入 具体执行逻辑 {{{ */
-    if (! ngx_strncmp(ctx.scheme.data, "file", ctx.scheme.len)) {
-        if (ngx_xconf_include_uri_file(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
-            ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                    "%V: run file error.",
-                    cmd_name);
-
-            return NGX_CONF_ERROR;
+    /* 查找当前 scheme {{{ */
+    for ( /* void */ ; scheme->name.len; scheme++) {
+        if (scheme_name.len == scheme->name.len &&
+                ngx_strcmp(scheme_name.data, scheme->name.data) == 0) {
+            break;
         }
-    } else if (! ngx_strncmp(ctx.scheme.data, "http", ctx.scheme.len)) {
-        if (ngx_xconf_include_uri_http(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
+    }
+
+    if (! scheme->name.len) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "%V: no scheme found for \"%V\".",
+                cmd_name, &ctx.scheme);
+
+        goto error;
+    }
+    /* }}} */
+
+    ctx.scheme = scheme;
+
+    /* 如果 scheme usecache 则计算 filename 并 判断 pre_usecache {{{ */
+    if (scheme->usecache) {
+        /* filename 计算, 插值, 展开 {{{ */
+        if (! (filename.len)) {
+            filename.len = ofilename_prefix.len + ofilename_suffix.len + sizeof(".") - 1;
+            filename.data = ngx_palloc(cf->pool, filename.len + 1);
+            ngx_snprintf(filename.data, filename.len,
+                    "%V.%V",
+                    &ofilename_prefix, &ofilename_suffix);
+        }
+
+        /* FIXME filename.data 是否需要 free ?? */
+        lua_getfield(L, LUA_GLOBALSINDEX, "format"); /* got the format function */
+        lua_pushlstring(L, (char *) filename.data, filename.len);
+        if (ngx_xconf_util_lua_pcall(cf, L, 1, 1, 0, 0) != NGX_OK) {
+            goto error;
+        }
+        filename.data = (u_char *) lua_tolstring(L, -1, &filename.len);
+        s = ngx_palloc(cf->pool, filename.len + 1);
+        ngx_cpystrn(s, filename.data, filename.len + 1); /* 让 ngx_cpystrn 帮忙添加个 \0 */
+        filename.data = s;
+        s = NULL;
+        lua_pop(L, 1);
+
+        if (ngx_conf_full_name(cf->cycle, &filename, 1) != NGX_OK) {
+            goto error;
+        }
+        /* }}} */
+
+        ctx.cachefile = ngx_palloc(cf->pool, sizeof(ngx_file_t));
+        if (ctx.cachefile == NULL) {
             ngx_log_error(NGX_LOG_ERR, cf->log, 0,
-                    "%V: run http error.",
+                    "%V: alloc cachefile error.",
                     cmd_name);
 
-            return NGX_CONF_ERROR;
-        } else {
-            rv = ngx_conf_parse(cf, &ctx.cachefile);
+            goto error;
+        }
+        ngx_memzero(ctx.cachefile, sizeof(ngx_file_t));
 
-            if (rv != NGX_CONF_OK) {
-                return NGX_CONF_ERROR;
+        ctx.cachefile->name = filename;
+        ctx.cachefile->log = cf->log;
+
+        dd("pre-usecache: %d, %d", (int)ctx.scheme->pre_usecache, (int)ctx.pre_usecache);
+        if (ctx.scheme->pre_usecache && ctx.pre_usecache > -1) {
+            ngx_file_t  *file;
+
+            file = ctx.cachefile;
+
+            /* 获取文件信息 FAIL */
+            if (ngx_file_info(file->name.data, &file->info) == -1) {
+                /* 如果文件不存在则忽略，否则报错 */
+                if (errno != ENOENT) {
+                    ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                            "%V: get file \"%V\" info error: %s.",
+                            cmd_name, file->name, strerror(errno));
+
+                    goto error;
+                }
+            /* 获取文件信息 OK, 有没可能是个 目录 ?? ，如果谁这么配置 !!! */
+            } else {
+                int     now;
+
+                /* 只要文件存在就是用 */
+                if (ctx.pre_usecache == 0) {
+                    goto do_cachefile;
+                }
+
+                ngx_time_update();
+                now = (int)ngx_time();
+
+                dd("pre-usecache now: %d, mtime: %d, diff: %d, pref: %d.",
+                        now, (int)file->info.st_mtime, now - (int)file->info.st_mtime, (int)ctx.pre_usecache);
+
+                if (now - file->info.st_mtime <= ctx.pre_usecache) {
+                    goto do_cachefile;
+                }
             }
         }
     }
     /* }}} */
+
+    ngx_log_error(NGX_LOG_INFO, cf->log, 0,
+            "\n- - - - - - - -\ncmd_name: %V\nfileneme: %V\nuri: %V\npre_usecache: %d\nfail_usecache: %d\nevaluri: %d\nscheme: %V\nnoscheme_uri: %V\n- - - - - - - -",
+            cmd_name, &filename, &uri, ctx.pre_usecache, ctx.fail_usecache, ctx.evaluri, &ctx.scheme->name, &ctx.noscheme_uri);
+
+    /* 执行具体 scheme {{{ */
+    if (scheme->handler(cf, cmd, conf, &ctx) == NGX_CONF_ERROR) {
+        return NGX_CONF_ERROR;
+    } else {
+        if (scheme->usecache) {
+            if (ctx.fetch_fail) {
+                goto fetch_fail;
+            } else if (ctx.do_cachefile) {
+                goto do_cachefile;
+            }
+        }
+    }
+    /* }}} */
+
+    goto done;
+
+fetch_fail:
+    /* FIXME fail_usecache */
+    ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+            "%V: fetch fail.",
+            cmd_name);
+
+    goto error;
+
+do_cachefile:
+    if (! scheme->usecache) {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0,
+                "%V: current scheme \"%V\" can not usecache.",
+                cmd_name, &scheme->name);
+
+        goto error;
+    }
+
+    dd("do cachefile");
+    rv = ngx_conf_parse(cf, &ctx.cachefile->name);
+
+    if (rv != NGX_CONF_OK) {
+        ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                "%V: do cachefile \"%V\" error.",
+                cmd_name, &ctx.cachefile->name);
+
+        /* 删除解析出错的 cachefile */
+        if (! ctx.keep_error_cachefile) {
+            if (ngx_delete_file(ctx.cachefile->name.data) == NGX_FILE_ERROR) {
+                    ngx_log_error(NGX_LOG_WARN, cf->log, 0,
+                            "%V: delete cachefile \"%V\" error.",
+                            cmd_name, &ctx.cachefile->name);
+            }
+        }
+
+        goto error;
+    }
 
     goto done;
 

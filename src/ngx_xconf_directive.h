@@ -6,17 +6,37 @@
 #include "ngx_xconf_common.h"
 #include "ngx_xconf_util.lua.h"
 
+
+typedef struct ngx_xconf_ctx_s ngx_xconf_ctx_t;
+
 typedef struct {
+    ngx_str_t        name;
+    char            *(*handler)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
+    ngx_flag_t       enable;
+    ngx_flag_t       usecache;
+    ngx_flag_t       pre_usecache;
+    ngx_flag_t       fail_usecache;
+} ngx_xconf_scheme_t;
+
+
+struct ngx_xconf_ctx_s {
     lua_State       *lua;
-    ngx_str_t        cachefile;
+    ngx_file_t      *cachefile;
     ngx_int_t        timeout; /* s */
     ngx_int_t        pre_usecache; /* s */
     ngx_int_t        fail_usecache; /* s */
     ngx_str_t        uri;
     ngx_str_t        noscheme_uri;
     ngx_flag_t       evaluri;
-    ngx_str_t        scheme;
-} ngx_xconf_ctx_t;
+    ngx_flag_t       keep_error_cachefile;
+    ngx_xconf_scheme_t  *scheme;
+
+    /* 以上由 scheme router 逻辑设置 */
+    /* 以下由 scheme 处理函数设置，用于告知 scheme router 接下来做什么 */
+    ngx_flag_t       fetch_fail;
+    ngx_flag_t       do_cachefile;
+};
+
 
 char * ngx_xconf_include_uri(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -30,6 +50,7 @@ char * ngx_xconf_include_uri_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
 char * ngx_xconf_include_uri_http(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_lua(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
 char * ngx_xconf_include_uri_luai(ngx_conf_t *cf, ngx_command_t *cmd, void *conf, ngx_xconf_ctx_t *ctx);
+
 
 #endif /* NGX_CONF_DIRECTIVE_H */
 
